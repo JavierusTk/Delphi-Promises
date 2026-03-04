@@ -4,62 +4,36 @@ interface
 
 uses
   DUnitX.TestFramework, System.SysUtils, System.SyncObjs, System.Classes,
-  Next.Core.Promises, Next.Core.Test.Assert;
+  Next.Core.Promises, Next.Core.Test.Assert,
+  Next.Core.Test.GenericTest, Next.Core.TestPromises;
 
 type
   [TestFixture]
-  TTestPromiseFinally = class
+  TTestPromiseFinally<T> = class(TGenericTest<T>)
   public
-    [Test]
-    /// <summary>
-    /// Finally runs after resolve.
-    /// </summary>
-    procedure FinallyRunsAfterResolve;
-
-    [Test]
-    /// <summary>
-    /// Finally runs after reject.
-    /// </summary>
-    procedure FinallyRunsAfterReject;
-
-    [Test]
-    /// <summary>
-    /// Finally does not alter the resolved value.
-    /// </summary>
-    procedure FinallyDoesNotAlterResolvedValue;
-
-    [Test]
-    /// <summary>
-    /// Finally does not swallow the rejection.
-    /// </summary>
-    procedure FinallyDoesNotSwallowRejection;
-
-    [Test]
-    /// <summary>
-    /// Finally that raises replaces the original result with the new exception.
-    /// </summary>
-    procedure FinallyThatRaisesReplacesResult;
-
-    [Test]
-    /// <summary>
-    /// Main.Finally executes in main thread.
-    /// </summary>
-    procedure MainFinallyExecutesInMainThread;
+    [Test]    procedure FinallyRunsAfterResolve;
+    [Test]    procedure FinallyRunsAfterReject;
+    [Test]    procedure FinallyPreservesResolvedValue;
+    [Test]    procedure FinallyPreservesRejection;
+    [Test]    procedure FinallyRaisingReplacesResolvedResult;
+    [Test]    procedure FinallyRaisingReplacesRejection;
+    [Test]    procedure FinallyFollowedByThenBy;
+    [Test]    procedure MainFinallyRunsAfterResolve;
   end;
 
 implementation
 
-{ TTestPromiseFinally }
+{ TTestPromiseFinally<T> }
 
-procedure TTestPromiseFinally.FinallyRunsAfterResolve;
+procedure TTestPromiseFinally<T>.FinallyRunsAfterResolve;
 var
   LFinallyCalled: Boolean;
-  LPromise: IPromise<Integer>;
+  LPromise: IPromise<T>;
 begin
   LFinallyCalled := False;
-  LPromise := Promise.Resolve<Integer>(function: Integer
+  LPromise := Promise.Resolve<T>(function: T
     begin
-      Result := 42;
+      Result := CreateValue(42);
     end)
   .&Finally(procedure
     begin
@@ -70,13 +44,13 @@ begin
   Assert.IsTrue(LFinallyCalled);
 end;
 
-procedure TTestPromiseFinally.FinallyRunsAfterReject;
+procedure TTestPromiseFinally<T>.FinallyRunsAfterReject;
 var
   LFinallyCalled: Boolean;
-  LPromise: IPromise<Integer>;
+  LPromise: IPromise<T>;
 begin
   LFinallyCalled := False;
-  LPromise := Promise.Reject<Integer>(ETestException.Create('error'))
+  LPromise := Promise.Reject<T>(ETestException.Create('error'))
     .&Finally(procedure
       begin
         LFinallyCalled := True;
@@ -86,13 +60,13 @@ begin
   Assert.IsTrue(LFinallyCalled);
 end;
 
-procedure TTestPromiseFinally.FinallyDoesNotAlterResolvedValue;
+procedure TTestPromiseFinally<T>.FinallyPreservesResolvedValue;
 var
-  LPromise: IPromise<Integer>;
+  LPromise: IPromise<T>;
 begin
-  LPromise := Promise.Resolve<Integer>(function: Integer
+  LPromise := Promise.Resolve<T>(function: T
     begin
-      Result := 42;
+      Result := CreateValue(42);
     end)
   .&Finally(procedure
     begin
@@ -100,14 +74,14 @@ begin
     end);
 
   Assert.Resolves(LPromise);
-  Assert.AreEqual(42, LPromise.Await);
+  TestEqualsFreeExpected(CreateValue(42), LPromise.Await);
 end;
 
-procedure TTestPromiseFinally.FinallyDoesNotSwallowRejection;
+procedure TTestPromiseFinally<T>.FinallyPreservesRejection;
 var
-  LPromise: IPromise<Integer>;
+  LPromise: IPromise<T>;
 begin
-  LPromise := Promise.Reject<Integer>(ETestException.Create('original error'))
+  LPromise := Promise.Reject<T>(ETestException.Create('original error'))
     .&Finally(procedure
       begin
         // Do nothing
@@ -116,13 +90,13 @@ begin
   Assert.RejectsWith(LPromise, ETestException);
 end;
 
-procedure TTestPromiseFinally.FinallyThatRaisesReplacesResult;
+procedure TTestPromiseFinally<T>.FinallyRaisingReplacesResolvedResult;
 var
-  LPromise: IPromise<Integer>;
+  LPromise: IPromise<T>;
 begin
-  LPromise := Promise.Resolve<Integer>(function: Integer
+  LPromise := Promise.Resolve<T>(function: T
     begin
-      Result := 42;
+      Result := CreateValue(42);
     end)
   .&Finally(procedure
     begin
@@ -132,18 +106,52 @@ begin
   Assert.RejectsWith(LPromise, ETestException);
 end;
 
-procedure TTestPromiseFinally.MainFinallyExecutesInMainThread;
+procedure TTestPromiseFinally<T>.FinallyRaisingReplacesRejection;
+var
+  LPromise: IPromise<T>;
+begin
+  LPromise := Promise.Reject<T>(EInvalidOp.Create('original'))
+    .&Finally(procedure
+      begin
+        raise ETestException.Create('finally replaces');
+      end);
+
+  Assert.RejectsWith(LPromise, ETestException);
+end;
+
+procedure TTestPromiseFinally<T>.FinallyFollowedByThenBy;
+var
+  LPromise: IPromise<T>;
+begin
+  LPromise := Promise.Resolve<T>(function: T
+    begin
+      Result := CreateValue(42);
+    end)
+  .&Finally(procedure
+    begin
+      // Nothing
+    end)
+  .ThenBy(function(const V: T): T
+    begin
+      Result := V;
+    end);
+
+  Assert.Resolves(LPromise);
+  TestEqualsFreeExpected(CreateValue(42), LPromise.Await);
+end;
+
+procedure TTestPromiseFinally<T>.MainFinallyRunsAfterResolve;
 var
   LFinallyCalled: Boolean;
   LMainThread: TThreadID;
-  LPromise: IPromise<Integer>;
+  LPromise: IPromise<T>;
 begin
   LMainThread := TThread.CurrentThread.ThreadID;
   LFinallyCalled := False;
 
-  LPromise := Promise.Resolve<Integer>(function: Integer
+  LPromise := Promise.Resolve<T>(function: T
     begin
-      Result := 42;
+      Result := CreateValue(42);
     end)
   .Main.&Finally(procedure
     begin
@@ -156,6 +164,10 @@ begin
 end;
 
 initialization
-  TDUnitX.RegisterTestFixture(TTestPromiseFinally);
+  TDUnitX.RegisterTestFixture(TTestPromiseFinally<Integer>);
+  TDUnitX.RegisterTestFixture(TTestPromiseFinally<Boolean>);
+  TDUnitX.RegisterTestFixture(TTestPromiseFinally<String>);
+  TDUnitX.RegisterTestFixture(TTestPromiseFinally<TSimpleRecord>);
+  TDUnitX.RegisterTestFixture(TTestPromiseFinally<TMyObject>);
 
 end.

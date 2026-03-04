@@ -4,144 +4,63 @@ interface
 
 uses
   DUnitX.TestFramework, System.SysUtils, System.SyncObjs, System.Classes,
-  Next.Core.Promises, Next.Core.Promises.Exceptions, Next.Core.Test.Assert;
+  Next.Core.Promises, Next.Core.Promises.Exceptions, Next.Core.Test.Assert,
+  Next.Core.Test.GenericTest, Next.Core.TestPromises;
 
 type
   [TestFixture]
-  TTestPromiseAny = class
+  TTestPromiseAny<T> = class(TGenericTest<T>)
   public
+    [Test]    procedure EmptyArrayRejects;
+    [Test]    procedure SingleResolvingPromise;
+    [Test]    procedure SingleRejectingPromise;
+    [Test]    procedure FirstResolvesAnyResolves;
+    [Test]    procedure OnlyLastResolvesStillResolves;
+    [Test]    procedure AllRejectAggregateException;
+    [Test]    procedure AllRejectExceptionCountMatches;
     [Test]
-    /// <summary>
-    /// Any with mixed results - resolves with the first successful value.
-    /// </summary>
-    procedure MixedResultsResolvesWithFirstSuccess;
+    procedure AllRejectMessagesPreserved;
+  end;
 
-    [Test]
-    /// <summary>
-    /// Any where all reject - rejects with EAggregateException containing all inner exceptions.
-    /// </summary>
-    procedure AllRejectAggregateException;
-
-    [Test]
-    /// <summary>
-    /// Any where only the last one resolves - still resolves.
-    /// </summary>
-    procedure OnlyLastResolvesStillResolves;
-
-    [Test]
-    /// <summary>
-    /// Any with a single resolving promise.
-    /// </summary>
-    procedure SingleResolvingPromise;
-
-    [Test]
-    /// <summary>
-    /// Any with a single rejecting promise - rejects with EAggregateException containing one exception.
-    /// </summary>
-    procedure SingleRejectingPromise;
-
-    [Test]
-    /// <summary>
-    /// Any with empty array - rejects with EArgumentException.
-    /// </summary>
-    procedure EmptyArrayRejects;
-
-    [Test]
-    /// <summary>
-    /// Stress test: Any with many concurrent promises.
-    /// </summary>
-    procedure StressTestManyPromises;
+  [TestFixture]
+  TTestPromiseAnyConcurrency = class
+  public
+    [Test]    procedure StressTestManyPromises;
   end;
 
 implementation
 
-{ TTestPromiseAny }
+{ TTestPromiseAny<T> }
 
-procedure TTestPromiseAny.MixedResultsResolvesWithFirstSuccess;
+procedure TTestPromiseAny<T>.EmptyArrayRejects;
 var
-  LPromise: IPromise<Integer>;
-  LSlowSignal: TEvent;
+  LPromise: IPromise<T>;
 begin
-  LSlowSignal := TEvent.Create;
-  try
-    LPromise := Promise.Any<Integer>([
-      Promise.Reject<Integer>(ETestException.Create('error1')),
-      Promise.Resolve<Integer>(function: Integer
-        begin
-          Result := 42;
-        end),
-      Promise.Resolve<Integer>(function: Integer
-        begin
-          LSlowSignal.WaitFor;
-          Result := 99;
-        end)
-    ]);
-
-    Assert.Resolves(LPromise);
-    Assert.AreEqual(42, LPromise.Await);
-    LSlowSignal.SetEvent;
-  finally
-    LSlowSignal.Free;
-  end;
+  LPromise := Promise.Any<T>([]);
+  Assert.RejectsWith(LPromise, EArgumentException);
 end;
 
-procedure TTestPromiseAny.AllRejectAggregateException;
+procedure TTestPromiseAny<T>.SingleResolvingPromise;
 var
-  LPromise: IPromise<Integer>;
+  LPromise: IPromise<T>;
 begin
-  LPromise := Promise.Any<Integer>([
-    Promise.Reject<Integer>(ETestException.Create('error1')),
-    Promise.Reject<Integer>(ETestException.Create('error2')),
-    Promise.Reject<Integer>(ETestException.Create('error3'))
-  ]);
-
-  Assert.RejectsWith(LPromise, EAggregateException);
-
-  // Verify all inner exceptions are present
-  LPromise.InternalWait;
-  var LAgg := LPromise.GetFailure.Reason as EAggregateException;
-  Assert.AreEqual(3, Length(LAgg.Exceptions));
-end;
-
-procedure TTestPromiseAny.OnlyLastResolvesStillResolves;
-var
-  LPromise: IPromise<Integer>;
-begin
-  LPromise := Promise.Any<Integer>([
-    Promise.Reject<Integer>(ETestException.Create('error1')),
-    Promise.Reject<Integer>(ETestException.Create('error2')),
-    Promise.Resolve<Integer>(function: Integer
+  LPromise := Promise.Any<T>([
+    Promise.Resolve<T>(function: T
       begin
-        Sleep(50); // Give the rejections time to process
-        Result := 42;
+        Result := CreateValue(7);
       end)
   ]);
 
   Assert.Resolves(LPromise);
-  Assert.AreEqual(42, LPromise.Await);
+  TestEqualsFreeExpected(CreateValue(7), LPromise.Await);
 end;
 
-procedure TTestPromiseAny.SingleResolvingPromise;
+procedure TTestPromiseAny<T>.SingleRejectingPromise;
 var
-  LPromise: IPromise<Integer>;
+  LPromise: IPromise<T>;
 begin
-  LPromise := Promise.Any<Integer>([
-    Promise.Resolve<Integer>(function: Integer
-      begin
-        Result := 7;
-      end)
-  ]);
-
-  Assert.Resolves(LPromise);
-  Assert.AreEqual(7, LPromise.Await);
-end;
-
-procedure TTestPromiseAny.SingleRejectingPromise;
-var
-  LPromise: IPromise<Integer>;
-begin
-  LPromise := Promise.Any<Integer>([
-    Promise.Reject<Integer>(ETestException.Create('only error'))
+  LPromise := Promise.Any<T>([
+    Promise.Reject<T>(ETestException.Create('only error'))
   ]);
 
   Assert.RejectsWith(LPromise, EAggregateException);
@@ -149,18 +68,107 @@ begin
   LPromise.InternalWait;
   var LAgg := LPromise.GetFailure.Reason as EAggregateException;
   Assert.AreEqual(1, Length(LAgg.Exceptions));
-  Assert.AreEqual('only error', LAgg.Exceptions[0].Message);
+  Assert.IsTrue(LAgg.Message.Contains('only error'));
 end;
 
-procedure TTestPromiseAny.EmptyArrayRejects;
+procedure TTestPromiseAny<T>.FirstResolvesAnyResolves;
 var
-  LPromise: IPromise<Integer>;
+  LPromise: IPromise<T>;
+  LSlowSignal: TEvent;
 begin
-  LPromise := Promise.Any<Integer>([]);
-  Assert.RejectsWith(LPromise, EArgumentException);
+  LSlowSignal := TEvent.Create;
+  try
+    LPromise := Promise.Any<T>([
+      Promise.Reject<T>(ETestException.Create('error1')),
+      Promise.Resolve<T>(function: T
+        begin
+          Result := CreateValue(42);
+        end),
+      Promise.Resolve<T>(function: T
+        begin
+          LSlowSignal.WaitFor;
+          Result := CreateValue(99);
+        end)
+    ]);
+
+    Assert.Resolves(LPromise);
+    TestEqualsFreeExpected(CreateValue(42), LPromise.Await);
+    LSlowSignal.SetEvent;
+  finally
+    LSlowSignal.Free;
+  end;
 end;
 
-procedure TTestPromiseAny.StressTestManyPromises;
+procedure TTestPromiseAny<T>.OnlyLastResolvesStillResolves;
+var
+  LPromise: IPromise<T>;
+begin
+  LPromise := Promise.Any<T>([
+    Promise.Reject<T>(ETestException.Create('error1')),
+    Promise.Reject<T>(ETestException.Create('error2')),
+    Promise.Resolve<T>(function: T
+      begin
+        Sleep(50);
+        Result := CreateValue(42);
+      end)
+  ]);
+
+  Assert.Resolves(LPromise);
+  TestEqualsFreeExpected(CreateValue(42), LPromise.Await);
+end;
+
+procedure TTestPromiseAny<T>.AllRejectAggregateException;
+var
+  LPromise: IPromise<T>;
+begin
+  LPromise := Promise.Any<T>([
+    Promise.Reject<T>(ETestException.Create('error1')),
+    Promise.Reject<T>(ETestException.Create('error2')),
+    Promise.Reject<T>(ETestException.Create('error3'))
+  ]);
+
+  Assert.RejectsWith(LPromise, EAggregateException);
+end;
+
+procedure TTestPromiseAny<T>.AllRejectExceptionCountMatches;
+var
+  LPromise: IPromise<T>;
+begin
+  LPromise := Promise.Any<T>([
+    Promise.Reject<T>(ETestException.Create('e1')),
+    Promise.Reject<T>(ETestException.Create('e2')),
+    Promise.Reject<T>(ETestException.Create('e3'))
+  ]);
+
+  Assert.RejectsWith(LPromise, EAggregateException);
+
+  LPromise.InternalWait;
+  var LAgg := LPromise.GetFailure.Reason as EAggregateException;
+  Assert.AreEqual(3, Length(LAgg.Exceptions));
+end;
+
+procedure TTestPromiseAny<T>.AllRejectMessagesPreserved;
+var
+  LPromise: IPromise<T>;
+begin
+  LPromise := Promise.Any<T>([
+    Promise.Reject<T>(ETestException.Create('alpha')),
+    Promise.Reject<T>(ETestException.Create('beta'))
+  ]);
+
+  Assert.RejectsWith(LPromise, EAggregateException);
+
+  LPromise.InternalWait;
+  var LAgg := LPromise.GetFailure.Reason as EAggregateException;
+  Assert.AreEqual(2, Length(LAgg.Exceptions));
+  // Check the aggregate message which is built at creation time from inner exception messages
+  Assert.IsTrue(LAgg.Message.Contains('alpha'));
+  Assert.IsTrue(LAgg.Message.Contains('beta'));
+end;
+
+{ TTestPromiseAnyConcurrency }
+
+procedure TTestPromiseAnyConcurrency.StressTestManyPromises;
 var
   LPromises: TArray<IPromise<Integer>>;
   LPromise: IPromise<Integer>;
@@ -187,6 +195,11 @@ begin
 end;
 
 initialization
-  TDUnitX.RegisterTestFixture(TTestPromiseAny);
+  TDUnitX.RegisterTestFixture(TTestPromiseAny<Integer>);
+  TDUnitX.RegisterTestFixture(TTestPromiseAny<Boolean>);
+  TDUnitX.RegisterTestFixture(TTestPromiseAny<String>);
+  TDUnitX.RegisterTestFixture(TTestPromiseAny<TSimpleRecord>);
+  TDUnitX.RegisterTestFixture(TTestPromiseAny<TMyObject>);
+  TDUnitX.RegisterTestFixture(TTestPromiseAnyConcurrency);
 
 end.

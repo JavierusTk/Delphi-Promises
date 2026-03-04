@@ -33,7 +33,8 @@ uses
   TestPromiseAllSettled in 'Types\TestPromiseAllSettled.pas',
   TestPromiseFinally in 'Types\TestPromiseFinally.pas',
   TestPromiseCancellation in 'Types\TestPromiseCancellation.pas',
-  TestPromiseTimeout in 'Types\TestPromiseTimeout.pas';
+  TestPromiseTimeout in 'Types\TestPromiseTimeout.pas',
+  TestPromiseExceptions in 'Types\TestPromiseExceptions.pas';
 
 {$IFNDEF TESTINSIGHT}
 var

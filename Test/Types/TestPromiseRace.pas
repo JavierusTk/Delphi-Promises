@@ -4,93 +4,97 @@ interface
 
 uses
   DUnitX.TestFramework, System.SysUtils, System.SyncObjs, System.Classes,
-  Next.Core.Promises, Next.Core.Promises.Exceptions, Next.Core.Test.Assert;
+  Next.Core.Promises, Next.Core.Promises.Exceptions, Next.Core.Test.Assert,
+  Next.Core.Test.GenericTest, Next.Core.TestPromises;
 
 type
   [TestFixture]
-  TTestPromiseRace = class
+  TTestPromiseRace<T> = class(TGenericTest<T>)
+  public
+    [Test]    procedure EmptyArrayRejects;
+    [Test]    procedure SinglePromiseResolves;
+    [Test]    procedure SinglePromiseRejects;
+    [Test]    procedure FirstResolvesWins;
+    [Test]    procedure FirstRejectsRaceRejects;
+    [Test]    procedure FastResolveSlowRejectIgnored;
+    [Test]
+    procedure RaceInChainThenBy;
+    [Test]    procedure PreResolvedPromiseInRace;
+    [Test]    procedure PreRejectedPromiseInRace;
+  end;
+
+  [TestFixture]
+  TTestPromiseRaceConcurrency = class
   public
     [Test]
-    /// <summary>
-    /// Race with multiple promises - the fastest one wins.
-    /// </summary>
-    procedure FastestPromiseWins;
-
-    [Test]
-    /// <summary>
-    /// Race where the fastest rejects - the Race promise rejects.
-    /// </summary>
-    procedure FastestRejectsRaceRejects;
-
-    [Test]
-    /// <summary>
-    /// Race where the fastest resolves and a slower one rejects - Race resolves.
-    /// </summary>
-    procedure FastestResolvesSlowerRejectsIgnored;
-
-    [Test]
-    /// <summary>
-    /// Race with a single promise - behaves identically to that promise.
-    /// </summary>
-    procedure SinglePromise;
-
-    [Test]
-    /// <summary>
-    /// Race with empty array - rejects with EArgumentException.
-    /// </summary>
-    procedure EmptyArrayRejects;
-
-    [Test]
-    /// <summary>
-    /// Race used in a chain - .ThenBy after Race receives the winner's value.
-    /// </summary>
-    procedure RaceInChain;
-
-    [Test]
-    /// <summary>
-    /// Race as a timeout pattern - one promise does real work, another raises after delay.
-    /// </summary>
-    procedure RaceAsTimeoutPattern;
-
-    [Test]
-    /// <summary>
-    /// Stress test: Race with many concurrent promises.
-    /// </summary>
     procedure StressTestManyPromises;
+    [Test]    procedure RaceAsTimeoutPattern;
   end;
 
 implementation
 
-{ TTestPromiseRace }
+{ TTestPromiseRace<T> }
 
-procedure TTestPromiseRace.FastestPromiseWins;
+procedure TTestPromiseRace<T>.EmptyArrayRejects;
+var
+  LPromise: IPromise<T>;
+begin
+  LPromise := Promise.Race<T>([]);
+  Assert.RejectsWith(LPromise, EArgumentException);
+end;
+
+procedure TTestPromiseRace<T>.SinglePromiseResolves;
+var
+  LPromise: IPromise<T>;
+begin
+  LPromise := Promise.Race<T>([
+    Promise.Resolve<T>(function: T
+      begin
+        Result := CreateValue(7);
+      end)
+  ]);
+
+  Assert.Resolves(LPromise);
+  TestEqualsFreeExpected(CreateValue(7), LPromise.Await);
+end;
+
+procedure TTestPromiseRace<T>.SinglePromiseRejects;
+var
+  LPromise: IPromise<T>;
+begin
+  LPromise := Promise.Race<T>([
+    Promise.Reject<T>(ETestException.Create('single error'))
+  ]);
+
+  Assert.RejectsWith(LPromise, ETestException);
+end;
+
+procedure TTestPromiseRace<T>.FirstResolvesWins;
 var
   LFastSignal: TEvent;
   LSlowSignal: TEvent;
-  LPromise: IPromise<Integer>;
+  LPromise: IPromise<T>;
 begin
   LFastSignal := TEvent.Create;
   LSlowSignal := TEvent.Create;
   try
-    LPromise := Promise.Race<Integer>([
-      Promise.Resolve<Integer>(function: Integer
+    LPromise := Promise.Race<T>([
+      Promise.Resolve<T>(function: T
         begin
           LFastSignal.WaitFor;
-          Result := 42;
+          Result := CreateValue(42);
         end),
-      Promise.Resolve<Integer>(function: Integer
+      Promise.Resolve<T>(function: T
         begin
           LSlowSignal.WaitFor;
-          Result := 99;
+          Result := CreateValue(99);
         end)
     ]);
 
-    // Release the fast one first
     LFastSignal.SetEvent;
     Assert.Resolves(LPromise);
-    Assert.AreEqual(42, LPromise.Await);
+    TestEqualsFreeExpected(CreateValue(42), LPromise.Await);
 
-    // Release slow one to prevent hanging threads
     LSlowSignal.SetEvent;
   finally
     LFastSignal.Free;
@@ -98,19 +102,19 @@ begin
   end;
 end;
 
-procedure TTestPromiseRace.FastestRejectsRaceRejects;
+procedure TTestPromiseRace<T>.FirstRejectsRaceRejects;
 var
-  LPromise: IPromise<Integer>;
+  LPromise: IPromise<T>;
   LSlowSignal: TEvent;
 begin
   LSlowSignal := TEvent.Create;
   try
-    LPromise := Promise.Race<Integer>([
-      Promise.Reject<Integer>(ETestException.Create('fast error')),
-      Promise.Resolve<Integer>(function: Integer
+    LPromise := Promise.Race<T>([
+      Promise.Reject<T>(ETestException.Create('fast error')),
+      Promise.Resolve<T>(function: T
         begin
           LSlowSignal.WaitFor;
-          Result := 99;
+          Result := CreateValue(99);
         end)
     ]);
 
@@ -121,19 +125,19 @@ begin
   end;
 end;
 
-procedure TTestPromiseRace.FastestResolvesSlowerRejectsIgnored;
+procedure TTestPromiseRace<T>.FastResolveSlowRejectIgnored;
 var
-  LPromise: IPromise<Integer>;
+  LPromise: IPromise<T>;
   LSlowSignal: TEvent;
 begin
   LSlowSignal := TEvent.Create;
   try
-    LPromise := Promise.Race<Integer>([
-      Promise.Resolve<Integer>(function: Integer
+    LPromise := Promise.Race<T>([
+      Promise.Resolve<T>(function: T
         begin
-          Result := 42;
+          Result := CreateValue(42);
         end),
-      Promise.Resolve<Integer>(function: Integer
+      Promise.Resolve<T>(function: T
         begin
           LSlowSignal.WaitFor;
           raise ETestException.Create('slow error');
@@ -141,77 +145,94 @@ begin
     ]);
 
     Assert.Resolves(LPromise);
-    Assert.AreEqual(42, LPromise.Await);
+    TestEqualsFreeExpected(CreateValue(42), LPromise.Await);
     LSlowSignal.SetEvent;
   finally
     LSlowSignal.Free;
   end;
 end;
 
-procedure TTestPromiseRace.SinglePromise;
-var
-  LPromise: IPromise<Integer>;
-begin
-  LPromise := Promise.Race<Integer>([
-    Promise.Resolve<Integer>(function: Integer
-      begin
-        Result := 7;
-      end)
-  ]);
-
-  Assert.Resolves(LPromise);
-  Assert.AreEqual(7, LPromise.Await);
-end;
-
-procedure TTestPromiseRace.EmptyArrayRejects;
-var
-  LPromise: IPromise<Integer>;
-begin
-  LPromise := Promise.Race<Integer>([]);
-  Assert.RejectsWith(LPromise, EArgumentException);
-end;
-
-procedure TTestPromiseRace.RaceInChain;
+procedure TTestPromiseRace<T>.RaceInChainThenBy;
 var
   LPromise: IPromise<String>;
 begin
-  LPromise := Promise.Race<Integer>([
-    Promise.Resolve<Integer>(function: Integer
+  LPromise := Promise.Race<T>([
+    Promise.Resolve<T>(function: T
       begin
-        Result := 42;
+        Result := CreateValue(42);
       end)
   ])
-  .Op.ThenBy<String>(function(const V: Integer): String
+  .Op.ThenBy<String>(function(const V: T): String
     begin
-      Result := IntToStr(V);
+      Result := 'chained';
     end);
 
   Assert.Resolves(LPromise);
-  Assert.AreEqual('42', LPromise.Await);
+  Assert.AreEqual('chained', LPromise.Await);
 end;
 
-procedure TTestPromiseRace.RaceAsTimeoutPattern;
+procedure TTestPromiseRace<T>.PreResolvedPromiseInRace;
 var
-  LPromise: IPromise<Integer>;
+  LPromise: IPromise<T>;
+  LSlowSignal: TEvent;
 begin
-  // The timeout promise resolves faster than the "slow work" promise
-  LPromise := Promise.Race<Integer>([
-    Promise.Resolve<Integer>(function: Integer
-      begin
-        Sleep(5000); // Slow work
-        Result := 42;
-      end),
-    Promise.Resolve<Integer>(function: Integer
-      begin
-        Sleep(50); // Short timeout
-        raise ETimeoutException.Create('Operation timed out');
-      end)
-  ]);
+  LSlowSignal := TEvent.Create;
+  try
+    LPromise := Promise.Race<T>([
+      Promise.Resolve<T>(function: T
+        begin
+          Result := CreateValue(1);
+        end),
+      Promise.Resolve<T>(function: T
+        begin
+          LSlowSignal.WaitFor;
+          Result := CreateValue(99);
+        end)
+    ]);
 
-  Assert.RejectsWith(LPromise, ETimeoutException);
+    Assert.Resolves(LPromise);
+    TestEqualsFreeExpected(CreateValue(1), LPromise.Await);
+    LSlowSignal.SetEvent;
+  finally
+    LSlowSignal.Free;
+  end;
 end;
 
-procedure TTestPromiseRace.StressTestManyPromises;
+procedure TTestPromiseRace<T>.PreRejectedPromiseInRace;
+var
+  LPromise: IPromise<T>;
+  LSlowSignal: TEvent;
+begin
+  LSlowSignal := TEvent.Create;
+  try
+    LPromise := Promise.Race<T>([
+      Promise.Reject<T>(ETestException.Create('pre-rejected')),
+      Promise.Resolve<T>(function: T
+        begin
+          LSlowSignal.WaitFor;
+          Result := CreateValue(99);
+        end)
+    ]);
+
+    Assert.RejectsWith(LPromise, ETestException);
+    LSlowSignal.SetEvent;
+  finally
+    LSlowSignal.Free;
+  end;
+end;
+
+{ TTestPromiseRaceConcurrency }
+
+function MakeSignaledPromise(ASignal: TEvent; AValue: Integer): IPromise<Integer>;
+begin
+  Result := Promise.Resolve<Integer>(function: Integer
+    begin
+      ASignal.WaitFor;
+      Result := AValue;
+    end);
+end;
+
+procedure TTestPromiseRaceConcurrency.StressTestManyPromises;
 var
   LPromises: TArray<IPromise<Integer>>;
   LSignals: TArray<TEvent>;
@@ -226,13 +247,7 @@ begin
   for i := 0 to COUNT - 1 do
   begin
     LSignals[i] := TEvent.Create;
-    var LIndex := i;
-    var LSignal := LSignals[i];
-    LPromises[i] := Promise.Resolve<Integer>(function: Integer
-      begin
-        LSignal.WaitFor;
-        Result := LIndex;
-      end);
+    LPromises[i] := MakeSignaledPromise(LSignals[i], i);
   end;
 
   LPromise := Promise.Race<Integer>(LPromises);
@@ -251,7 +266,32 @@ begin
   end;
 end;
 
+procedure TTestPromiseRaceConcurrency.RaceAsTimeoutPattern;
+var
+  LPromise: IPromise<Integer>;
+begin
+  LPromise := Promise.Race<Integer>([
+    Promise.Resolve<Integer>(function: Integer
+      begin
+        Sleep(5000); // Slow work
+        Result := 42;
+      end),
+    Promise.Resolve<Integer>(function: Integer
+      begin
+        Sleep(50); // Short timeout
+        raise ETimeoutException.Create('Operation timed out');
+      end)
+  ]);
+
+  Assert.RejectsWith(LPromise, ETimeoutException);
+end;
+
 initialization
-  TDUnitX.RegisterTestFixture(TTestPromiseRace);
+  TDUnitX.RegisterTestFixture(TTestPromiseRace<Integer>);
+  TDUnitX.RegisterTestFixture(TTestPromiseRace<Boolean>);
+  TDUnitX.RegisterTestFixture(TTestPromiseRace<String>);
+  TDUnitX.RegisterTestFixture(TTestPromiseRace<TSimpleRecord>);
+  TDUnitX.RegisterTestFixture(TTestPromiseRace<TMyObject>);
+  TDUnitX.RegisterTestFixture(TTestPromiseRaceConcurrency);
 
 end.

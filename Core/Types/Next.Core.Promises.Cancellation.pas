@@ -69,7 +69,7 @@ end;
 
 function TCancellationTokenSource.IsCancelled: Boolean;
 begin
-  Result := TInterlocked.Read(FCancelled) = 1;
+  Result := TInterlocked.CompareExchange(FCancelled, 0, 0) = 1;
 end;
 
 procedure TCancellationTokenSource.ThrowIfCancelled;

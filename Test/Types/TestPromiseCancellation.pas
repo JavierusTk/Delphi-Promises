@@ -5,108 +5,93 @@ interface
 uses
   DUnitX.TestFramework, System.SysUtils, System.SyncObjs, System.Classes,
   Next.Core.Promises, Next.Core.Promises.Exceptions,
-  Next.Core.Promises.Cancellation, Next.Core.Test.Assert;
+  Next.Core.Promises.Cancellation, Next.Core.Test.Assert,
+  Next.Core.Test.GenericTest, Next.Core.TestPromises;
 
 type
   [TestFixture]
-  TTestPromiseCancellation = class
+  TTestPromiseCancellation<T> = class(TGenericTest<T>)
   public
-    [Test]
-    /// <summary>
-    /// Create a promise with a token, cancel before it starts - rejects with EOperationCancelled.
-    /// </summary>
-    procedure CancelBeforeStart;
+    [Test]    procedure CancelBeforeStartRejects;
+    [Test]    procedure TokenNotCancelledExecutesNormally;
+    [Test]    procedure CancelDuringExecution;
+    [Test]    procedure OnCancelledHandlerFires;
+    [Test]    procedure OnCancelledNotFiredOnOtherExceptions;
+    [Test]    procedure CatchRecoverFromCancellation;
+    [Test]    procedure CancelAlreadyResolvedIsNoop;
+    [Test]    procedure TokenPropagationThroughChain;
+  end;
 
-    [Test]
-    /// <summary>
-    /// Cancel during execution - cooperative check inside the function, verify cancellation.
-    /// </summary>
-    procedure CancelDuringExecution;
+  [TestFixture]
+  TTestCancellationTokenSource = class
+  public
+    [Test]    procedure BasicCancelAndIsCancelled;
+    [Test]    procedure CancelIsIdempotent;
+    [Test]    procedure ThrowIfCancelledNotRaisedWhenNotCancelled;
+    [Test]    procedure ThrowIfCancelledRaisesWhenCancelled;
+  end;
 
-    [Test]
-    /// <summary>
-    /// Cancel in a chain - second ThenBy not executed after cancellation.
-    /// </summary>
-    procedure CancelInChain;
-
-    [Test]
-    /// <summary>
-    /// OnCancelled handler fires on cancellation.
-    /// </summary>
-    procedure OnCancelledHandlerFires;
-
-    [Test]
-    /// <summary>
-    /// Catch can recover from EOperationCancelled.
-    /// </summary>
-    procedure CatchCanRecoverFromCancellation;
-
-    [Test]
-    /// <summary>
-    /// Token not cancelled - promise executes normally.
-    /// </summary>
-    procedure TokenNotCancelledExecutesNormally;
-
-    [Test]
-    /// <summary>
-    /// Race + cancellation token pattern: cancel remaining promises after Race settles.
-    /// </summary>
-    procedure RacePlusCancellationPattern;
-
-    [Test]
-    /// <summary>
-    /// TCancellationTokenSource basic functionality.
-    /// </summary>
-    procedure CancellationTokenSourceBasics;
-
-    [Test]
-    /// <summary>
-    /// ThrowIfCancelled raises EOperationCancelled when cancelled.
-    /// </summary>
-    procedure ThrowIfCancelledRaises;
+  [TestFixture]
+  TTestCancellationPatterns = class
+  public
+    [Test]    procedure RacePlusCancellationPattern;
   end;
 
 implementation
 
-{ TTestPromiseCancellation }
+{ TTestPromiseCancellation<T> }
 
-procedure TTestPromiseCancellation.CancelBeforeStart;
+procedure TTestPromiseCancellation<T>.CancelBeforeStartRejects;
 var
   LCts: ICancellationTokenSource;
-  LPromise: IPromise<Integer>;
+  LPromise: IPromise<T>;
 begin
   LCts := TCancellationTokenSource.Create;
-
-  // Cancel before creating the promise chain
   LCts.Cancel;
 
-  LPromise := Promise.Resolve<Integer>(function: Integer
+  LPromise := Promise.Resolve<T>(function: T
     begin
-      Result := 42;
+      Result := CreateValue(42);
     end)
   .CancelToken(LCts.Token)
-  .ThenBy(function(const V: Integer): Integer
+  .ThenBy(function(const V: T): T
     begin
-      // This should not execute
-      Result := V * 2;
+      Result := V;
     end);
 
   Assert.RejectsWith(LPromise, EOperationCancelled);
 end;
 
-procedure TTestPromiseCancellation.CancelDuringExecution;
+procedure TTestPromiseCancellation<T>.TokenNotCancelledExecutesNormally;
 var
   LCts: ICancellationTokenSource;
-  LPromise: IPromise<Integer>;
+  LPromise: IPromise<T>;
+begin
+  LCts := TCancellationTokenSource.Create;
+
+  LPromise := Promise.Resolve<T>(function: T
+    begin
+      LCts.Token.ThrowIfCancelled;
+      Result := CreateValue(42);
+    end)
+  .CancelToken(LCts.Token);
+
+  Assert.Resolves(LPromise);
+  TestEqualsFreeExpected(CreateValue(42), LPromise.Await);
+end;
+
+procedure TTestPromiseCancellation<T>.CancelDuringExecution;
+var
+  LCts: ICancellationTokenSource;
+  LPromise: IPromise<T>;
   LStartedSignal: TEvent;
 begin
   LCts := TCancellationTokenSource.Create;
   LStartedSignal := TEvent.Create;
   try
-    LPromise := Promise.Resolve<Integer>(function: Integer
+    LPromise := Promise.Resolve<T>(function: T
       begin
         LStartedSignal.SetEvent;
-        // Cooperative cancellation check
         var LIterations := 0;
         while LIterations < 1000 do
         begin
@@ -115,14 +100,11 @@ begin
           Sleep(10);
           Inc(LIterations);
         end;
-        Result := 42;
+        Result := CreateValue(42);
       end);
 
-    // Wait for the promise to start executing
     LStartedSignal.WaitFor(5000);
     Sleep(50);
-
-    // Cancel while executing
     LCts.Cancel;
 
     Assert.RejectsWith(LPromise, EOperationCancelled);
@@ -131,65 +113,20 @@ begin
   end;
 end;
 
-procedure TTestPromiseCancellation.CancelInChain;
+procedure TTestPromiseCancellation<T>.OnCancelledHandlerFires;
 var
   LCts: ICancellationTokenSource;
-  LPromise: IPromise<Integer>;
-  LSecondThenByCalled: Boolean;
-  LStartedSignal: TEvent;
-begin
-  LCts := TCancellationTokenSource.Create;
-  LSecondThenByCalled := False;
-  LStartedSignal := TEvent.Create;
-  try
-    LPromise := Promise.Resolve<Integer>(function: Integer
-      begin
-        LStartedSignal.SetEvent;
-        Result := 1;
-      end)
-    .CancelToken(LCts.Token)
-    .ThenBy(function(const V: Integer): Integer
-      begin
-        // This step completes
-        Result := V + 1;
-      end)
-    .ThenBy(function(const V: Integer): Integer
-      begin
-        // This should not execute if cancelled before reaching here
-        LSecondThenByCalled := True;
-        Result := V + 1;
-      end);
-
-    // Wait for execution to start, then cancel
-    LStartedSignal.WaitFor(5000);
-    LCts.Cancel;
-
-    // The promise may resolve or reject depending on timing
-    LPromise.InternalWait(5000);
-
-    // If cancellation happened before the second ThenBy executed, it should not have been called
-    // Note: Due to cooperative cancellation, timing may vary
-  finally
-    LStartedSignal.Free;
-  end;
-end;
-
-procedure TTestPromiseCancellation.OnCancelledHandlerFires;
-var
-  LCts: ICancellationTokenSource;
-  LPromise: IPromise<Integer>;
+  LPromise: IPromise<T>;
   LOnCancelledFired: Boolean;
 begin
   LCts := TCancellationTokenSource.Create;
   LOnCancelledFired := False;
-
-  // Cancel before execution
   LCts.Cancel;
 
-  LPromise := Promise.Resolve<Integer>(function: Integer
+  LPromise := Promise.Resolve<T>(function: T
     begin
       LCts.Token.ThrowIfCancelled;
-      Result := 42;
+      Result := CreateValue(42);
     end)
   .OnCancelled(procedure
     begin
@@ -200,54 +137,164 @@ begin
   Assert.IsTrue(LOnCancelledFired);
 end;
 
-procedure TTestPromiseCancellation.CatchCanRecoverFromCancellation;
+procedure TTestPromiseCancellation<T>.OnCancelledNotFiredOnOtherExceptions;
+var
+  LPromise: IPromise<T>;
+  LOnCancelledFired: Boolean;
+begin
+  LOnCancelledFired := False;
+
+  LPromise := Promise.Resolve<T>(function: T
+    begin
+      raise ETestException.Create('not a cancellation');
+    end)
+  .OnCancelled(procedure
+    begin
+      LOnCancelledFired := True;
+    end);
+
+  Assert.Rejects(LPromise);
+  Assert.IsFalse(LOnCancelledFired);
+end;
+
+procedure TTestPromiseCancellation<T>.CatchRecoverFromCancellation;
 var
   LCts: ICancellationTokenSource;
-  LPromise: IPromise<Integer>;
+  LPromise: IPromise<T>;
 begin
   LCts := TCancellationTokenSource.Create;
   LCts.Cancel;
 
-  LPromise := Promise.Resolve<Integer>(function: Integer
+  LPromise := Promise.Resolve<T>(function: T
     begin
       LCts.Token.ThrowIfCancelled;
-      Result := 42;
+      Result := CreateValue(42);
     end)
-  .Catch(function(E: Exception): Integer
+  .Catch(function(E: Exception): T
     begin
       if E is EOperationCancelled then
-        Result := -1
+        Result := CreateValue(99)
       else
         raise E;
     end);
 
   Assert.Resolves(LPromise);
-  Assert.AreEqual(-1, LPromise.Await);
+  TestEqualsFreeExpected(CreateValue(99), LPromise.Await);
 end;
 
-procedure TTestPromiseCancellation.TokenNotCancelledExecutesNormally;
+procedure TTestPromiseCancellation<T>.CancelAlreadyResolvedIsNoop;
 var
   LCts: ICancellationTokenSource;
-  LPromise: IPromise<Integer>;
+  LPromise: IPromise<T>;
 begin
   LCts := TCancellationTokenSource.Create;
 
-  LPromise := Promise.Resolve<Integer>(function: Integer
+  LPromise := Promise.Resolve<T>(function: T
     begin
-      LCts.Token.ThrowIfCancelled;
-      Result := 42;
+      Result := CreateValue(42);
     end)
-  .CancelToken(LCts.Token)
-  .ThenBy(function(const V: Integer): Integer
-    begin
-      Result := V * 2;
-    end);
+  .CancelToken(LCts.Token);
 
   Assert.Resolves(LPromise);
-  Assert.AreEqual(84, LPromise.Await);
+  TestEqualsFreeExpected(CreateValue(42), LPromise.Await);
+
+  // Cancel after already resolved - should have no effect
+  LCts.Cancel;
+  Assert.Resolves(LPromise);
 end;
 
-procedure TTestPromiseCancellation.RacePlusCancellationPattern;
+procedure TTestPromiseCancellation<T>.TokenPropagationThroughChain;
+var
+  LCts: ICancellationTokenSource;
+  LPromise: IPromise<T>;
+  LSecondThenByCalled: Boolean;
+  LStartedSignal: TEvent;
+begin
+  LCts := TCancellationTokenSource.Create;
+  LSecondThenByCalled := False;
+  LStartedSignal := TEvent.Create;
+  try
+    LPromise := Promise.Resolve<T>(function: T
+      begin
+        LStartedSignal.SetEvent;
+        Result := CreateValue(1);
+      end)
+    .CancelToken(LCts.Token)
+    .ThenBy(function(const V: T): T
+      begin
+        Result := CreateValue(2);
+      end)
+    .ThenBy(function(const V: T): T
+      begin
+        LSecondThenByCalled := True;
+        Result := CreateValue(3);
+      end);
+
+    LStartedSignal.WaitFor(5000);
+    LCts.Cancel;
+
+    // The promise may resolve or reject depending on timing
+    LPromise.InternalWait(5000);
+  finally
+    LStartedSignal.Free;
+  end;
+end;
+
+{ TTestCancellationTokenSource }
+
+procedure TTestCancellationTokenSource.BasicCancelAndIsCancelled;
+var
+  LCts: ICancellationTokenSource;
+  LToken: ICancellationToken;
+begin
+  LCts := TCancellationTokenSource.Create;
+  LToken := LCts.Token;
+
+  Assert.IsFalse(LCts.IsCancelled);
+  Assert.IsFalse(LToken.IsCancelled);
+
+  LCts.Cancel;
+
+  Assert.IsTrue(LCts.IsCancelled);
+  Assert.IsTrue(LToken.IsCancelled);
+end;
+
+procedure TTestCancellationTokenSource.CancelIsIdempotent;
+var
+  LCts: ICancellationTokenSource;
+begin
+  LCts := TCancellationTokenSource.Create;
+  LCts.Cancel;
+  LCts.Cancel; // Second cancel should not raise
+  Assert.IsTrue(LCts.IsCancelled);
+end;
+
+procedure TTestCancellationTokenSource.ThrowIfCancelledNotRaisedWhenNotCancelled;
+var
+  LCts: ICancellationTokenSource;
+begin
+  LCts := TCancellationTokenSource.Create;
+  Assert.WillNotRaise(procedure
+    begin
+      LCts.Token.ThrowIfCancelled;
+    end);
+end;
+
+procedure TTestCancellationTokenSource.ThrowIfCancelledRaisesWhenCancelled;
+var
+  LCts: ICancellationTokenSource;
+begin
+  LCts := TCancellationTokenSource.Create;
+  LCts.Cancel;
+  Assert.WillRaise(procedure
+    begin
+      LCts.Token.ThrowIfCancelled;
+    end, EOperationCancelled);
+end;
+
+{ TTestCancellationPatterns }
+
+procedure TTestCancellationPatterns.RacePlusCancellationPattern;
 var
   LCts: ICancellationTokenSource;
   LRaceResult: IPromise<Integer>;
@@ -283,14 +330,10 @@ begin
         end)
     ]);
 
-    // Wait for race to settle
     Assert.Resolves(LRaceResult);
     Assert.AreEqual(42, LRaceResult.Await);
 
-    // Now cancel to stop the slow worker
     LCts.Cancel;
-
-    // Give it time to notice
     Sleep(200);
     Assert.IsTrue(LWorkerCancelled);
   finally
@@ -298,49 +341,13 @@ begin
   end;
 end;
 
-procedure TTestPromiseCancellation.CancellationTokenSourceBasics;
-var
-  LCts: ICancellationTokenSource;
-  LToken: ICancellationToken;
-begin
-  LCts := TCancellationTokenSource.Create;
-  LToken := LCts.Token;
-
-  Assert.IsFalse(LCts.IsCancelled);
-  Assert.IsFalse(LToken.IsCancelled);
-
-  LCts.Cancel;
-
-  Assert.IsTrue(LCts.IsCancelled);
-  Assert.IsTrue(LToken.IsCancelled);
-
-  // Cancel is idempotent
-  LCts.Cancel;
-  Assert.IsTrue(LCts.IsCancelled);
-end;
-
-procedure TTestPromiseCancellation.ThrowIfCancelledRaises;
-var
-  LCts: ICancellationTokenSource;
-begin
-  LCts := TCancellationTokenSource.Create;
-
-  // Should not raise when not cancelled
-  Assert.WillNotRaise(procedure
-    begin
-      LCts.Token.ThrowIfCancelled;
-    end);
-
-  LCts.Cancel;
-
-  // Should raise when cancelled
-  Assert.WillRaise(procedure
-    begin
-      LCts.Token.ThrowIfCancelled;
-    end, EOperationCancelled);
-end;
-
 initialization
-  TDUnitX.RegisterTestFixture(TTestPromiseCancellation);
+  TDUnitX.RegisterTestFixture(TTestPromiseCancellation<Integer>);
+  TDUnitX.RegisterTestFixture(TTestPromiseCancellation<Boolean>);
+  TDUnitX.RegisterTestFixture(TTestPromiseCancellation<String>);
+  TDUnitX.RegisterTestFixture(TTestPromiseCancellation<TSimpleRecord>);
+  TDUnitX.RegisterTestFixture(TTestPromiseCancellation<TMyObject>);
+  TDUnitX.RegisterTestFixture(TTestCancellationTokenSource);
+  TDUnitX.RegisterTestFixture(TTestCancellationPatterns);
 
 end.

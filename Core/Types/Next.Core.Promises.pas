@@ -18,7 +18,9 @@ type
   /// <summary>
   /// Status used in TPromiseSettledResult to indicate whether a promise resolved or rejected.
   /// </summary>
+  {$SCOPEDENUMS ON}
   TPromiseStatus = (psResolved, psRejected);
+  {$SCOPEDENUMS OFF}
 
   /// <summary>
   /// Result record for Promise.AllSettled. Contains the status and either the resolved value or rejection error.
@@ -940,10 +942,20 @@ begin
     APromises[i].ThenBy(
       function(const AValue: T): T
       begin
-        Result := AValue;
         if TInterlocked.CompareExchange(LSettled, 1, 0) = 0 then
+        begin
+          // Winner: transfer value ownership to the outer promise
           TFirstPromise<T>(LOuterPromise).Resolve(AValue);
-      end)
+        end
+        else
+        begin
+          // Loser: manually dispose value that won't be used
+          var LTemp: TDisposableValue<T> := AValue;
+          LTemp.Dispose;
+        end;
+        // Don't hold the value in the internal chain to prevent double-free
+        Result := Default(T);
+      end, TDisposeValue.dvKeep)
     .Catch(
       procedure(E: Exception)
       var
@@ -991,7 +1003,6 @@ begin
 
   for i := Low(APromises) to High(APromises) do
   begin
-    var LIndex := i;
     APromises[i].ThenBy(
       function(const AValue: T): T
       begin
@@ -1011,8 +1022,9 @@ begin
 
         LLock.Enter;
         try
-          LExceptions[LIndex] := LClone;
-          LCount := TInterlocked.Increment(LRejectionCount);
+          LExceptions[LRejectionCount] := LClone;
+          Inc(LRejectionCount);
+          LCount := LRejectionCount;
         finally
           LLock.Leave;
         end;
